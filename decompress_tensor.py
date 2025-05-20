@@ -1,129 +1,294 @@
-import json
-import torch
 import numpy as np
-import base64
-import zlib
-import io
+import torch
 
-def decompress_tensor_optimized(compressed_data):
-    # Handle sparse format
-    if compressed_data.get('format') == 'sparse':
-        # Decode and decompress
-        compressed_bytes = base64.b64decode(compressed_data['data'])
-        decompressed_json = zlib.decompress(compressed_bytes)
-        sparse_data = json.loads(decompressed_json)
-        
-        # Reconstruct sparse tensor
-        shape = sparse_data['shape']
-        indices = sparse_data['indices']
-        values = sparse_data['values']
-        min_val = sparse_data['min']
-        max_val = sparse_data['max']
-        
-        # Create empty array
-        array = np.zeros(shape, dtype=np.float32)
-        
-        # Fill non-zero values
-        for idx, val in zip(zip(*indices), values):
-            array[idx] = val
-        
-        return torch.tensor(array)
-    
-    # Handle quantized format
-    if 'quantized' in compressed_data.get('format', ''):
-        # Extract parameters
-        shape = compressed_data['shape']
-        min_val = compressed_data['min_val']
-        max_val = compressed_data['max_val']
-        precision_bits = int(compressed_data['format'].split('_')[1].replace('bit', ''))
-        
-        # Decode and decompress
-        compressed_bytes = base64.b64decode(compressed_data['data'])
-        decompressed_bytes = zlib.decompress(compressed_bytes)
-        
-        # Convert to numpy array
-        if precision_bits == 8:
-            # Direct 8-bit quantization
-            quantized = np.frombuffer(decompressed_bytes, dtype=np.uint8)
-            normalized = quantized.astype(np.float32) / 255.0
-            
-        elif precision_bits == 4:
-            # Unpack 4-bit values
-            packed = np.frombuffer(decompressed_bytes, dtype=np.uint8)
-            total_values = np.prod(shape)
-            
-            # Create array for unpacked values
-            quantized = np.zeros(total_values, dtype=np.uint8)
-            
-            # Unpack values
-            even_indices = np.arange(0, total_values, 2)
-            odd_indices = np.minimum(even_indices + 1, total_values - 1)
-            
-            # Extract 4-bit values
-            quantized[even_indices] = (packed >> 4) & 0xF
-            if odd_indices[-1] < total_values:
-                quantized[odd_indices] = packed & 0xF
-            
-            normalized = quantized.astype(np.float32) / 15.0
-            
-        elif precision_bits == 2:
-            # Unpack 2-bit values
-            packed = np.frombuffer(decompressed_bytes, dtype=np.uint8)
-            total_values = np.prod(shape)
-            
-            # Create array for unpacked values
-            quantized = np.zeros(total_values, dtype=np.uint8)
-            
-            # Calculate number of complete bytes
-            num_complete_bytes = total_values // 4
-            
-            # Unpack each byte into 4 values
-            for i in range(num_complete_bytes):
-                byte = packed[i]
-                base_idx = i * 4
-                quantized[base_idx] = (byte >> 6) & 0x3
-                quantized[base_idx + 1] = (byte >> 4) & 0x3
-                quantized[base_idx + 2] = (byte >> 2) & 0x3
-                quantized[base_idx + 3] = byte & 0x3
-            
-            # Handle remaining values
-            remaining = total_values % 4
-            if remaining > 0:
-                byte = packed[num_complete_bytes]
-                base_idx = num_complete_bytes * 4
-                for j in range(remaining):
-                    shift = 6 - j * 2
-                    quantized[base_idx + j] = (byte >> shift) & 0x3
-            
-            normalized = quantized.astype(np.float32) / 3.0
-        
-        # Denormalize
-        array = normalized * (max_val - min_val) + min_val
-        
-        # Reshape to original shape
-        array = array.reshape(shape)
-        
-        # Convert to tensor
-        return torch.tensor(array, dtype=torch.float32)
-    
-    # Fallback to original method for other formats
-    if 'data' in compressed_data:
-        try:
-            binary_data = base64.b64decode(compressed_data['data'])
-            stream = io.BytesIO(binary_data)
-            loaded = np.load(stream, allow_pickle=True)
-            array = loaded['data']
-            
-            # Restore the original dtype
-            if compressed_data.get('dtype') == 'float16':
-                array = array.astype(np.float16)
-            elif compressed_data.get('dtype') == 'float32':
-                array = array.astype(np.float32)
-            
-            # Convert to tensor
-            return torch.tensor(array)
-        except Exception as e:
-            print(f"Error decompressing data: {e}")
-            return None
-    
-    return None
+
+def entropy_encode(data_bytes):
+    """
+    Apply LZ4 compression to binary data.
+    Simple, fast, and effective entropy coding.
+
+    Args:
+        data_bytes: Binary data as bytes
+
+    Returns:
+        Dictionary with compressed data and metadata
+    """
+    try:
+        import lz4.frame
+
+        # Apply LZ4 compression with maximum compression level
+        compressed = lz4.frame.compress(data_bytes, compression_level=9)
+
+        # Return compressed data and metadata
+        return {
+            'encoding': 'lz4',
+            'data': compressed.hex(),
+            'original_size': len(data_bytes),
+            'compressed_size': len(compressed)
+        }
+    except ImportError:
+        print("Warning: LZ4 not installed. Please install with 'pip install lz4'.")
+        # Return uncompressed data if LZ4 is not available
+        return {
+            'encoding': 'none',
+            'data': data_bytes.hex(),
+            'original_size': len(data_bytes),
+            'compressed_size': len(data_bytes)
+        }
+    except Exception as e:
+        print(f"Error during LZ4 compression: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return uncompressed data if compression fails
+        return {
+            'encoding': 'none',
+            'data': data_bytes.hex(),
+            'original_size': len(data_bytes),
+            'compressed_size': len(data_bytes)
+        }
+
+
+def entropy_decode(encoded_data):
+    """
+    Decompress data that was compressed with LZ4.
+
+    Args:
+        encoded_data: Dictionary with compressed data and metadata
+
+    Returns:
+        Original binary data
+    """
+    encoding = encoded_data.get('encoding', 'none')
+
+    try:
+        if encoding == 'lz4':
+            import lz4.frame
+
+            # Get compressed data
+            compressed = bytes.fromhex(encoded_data.get('data'))
+
+            # Decompress with LZ4
+            decompressed = lz4.frame.decompress(compressed)
+            return decompressed
+        elif encoding == 'none':
+            # No compression was applied
+            return bytes.fromhex(encoded_data.get('data'))
+        else:
+            raise ValueError(f"Unknown encoding: {encoding}")
+    except ImportError:
+        print("Error: LZ4 not installed. Please install with 'pip install lz4'.")
+        raise
+    except Exception as e:
+        print(f"Error during LZ4 decompression: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def compress_logits(logits, bits=16):
+    """
+    Compress logits using bit-depth reduction and LZ4 compression.
+    Simple, fast, and effective compression for neural network logits.
+
+    Args:
+        logits: Tensor of logits
+        bits: Bit depth for quantization (4, 8, 16, 32)
+
+    Returns:
+        Compressed representation with statistics
+    """
+    try:
+        # Convert to numpy for processing
+        logits_np = logits.cpu().numpy()
+        original_shape = logits_np.shape
+        original_size = logits_np.size * 4  # 32-bit float = 4 bytes per value
+
+        # Step 1: Apply bit-depth reduction
+        if bits == 16:
+            # 16-bit compression (FP16)
+            compressed_np = logits_np.astype(np.float16)
+            bit_compressed_size = compressed_np.size * 2  # 2 bytes per value
+            quant_params = {}
+
+        elif bits == 8:
+            # 8-bit quantization
+            logits_min = logits_np.min()
+            logits_max = logits_np.max()
+            scale = (logits_max - logits_min) / 255 if logits_max > logits_min else 1
+            zero_point = -logits_min / scale if scale > 0 else 0
+            compressed_np = np.clip(np.round(logits_np / scale + zero_point), 0, 255).astype(np.uint8)
+            bit_compressed_size = compressed_np.size  # 1 byte per value
+
+            quant_params = {
+                'scale': float(scale),
+                'zero_point': float(zero_point)
+            }
+
+        elif bits == 4:
+            # 4-bit quantization
+            logits_min = logits_np.min()
+            logits_max = logits_np.max()
+            scale = (logits_max - logits_min) / 15 if logits_max > logits_min else 1
+            zero_point = -logits_min / scale if scale > 0 else 0
+            compressed_np = np.clip(np.round(logits_np / scale + zero_point), 0, 15).astype(np.uint8)
+
+            # Pack 2 4-bit values per byte
+            flat = compressed_np.flatten()
+            if len(flat) % 2 == 1:
+                flat = np.append(flat, 0)  # Pad if odd length
+
+            # Pack 2 4-bit values per byte
+            even_indices = np.arange(0, len(flat), 2)
+            odd_indices = np.arange(1, len(flat), 2)
+
+            # Handle the case where there are more even indices than odd indices
+            if len(odd_indices) < len(even_indices):
+                packed = np.zeros(len(even_indices), dtype=np.uint8)
+                packed[:len(even_indices)] = flat[even_indices] & 0x0F
+                packed[:len(odd_indices)] |= (flat[odd_indices] << 4) & 0xF0
+            else:
+                packed = (flat[even_indices] | (flat[odd_indices] << 4)).astype(np.uint8)
+
+            compressed_np = packed
+            bit_compressed_size = len(packed)  # 0.5 bytes per value, packed
+
+            quant_params = {
+                'scale': float(scale),
+                'zero_point': float(zero_point),
+                'packed': True,
+                'values_per_byte': 2,
+                'padded': bool(len(flat) != np.prod(logits_np.shape))
+            }
+
+        else:  # bits == 32 or other
+            # 32-bit (unchanged)
+            compressed_np = logits_np
+            bit_compressed_size = compressed_np.size * 4  # 4 bytes per value
+            quant_params = {}
+
+        # Step 2: Get binary data
+        data_bytes = compressed_np.tobytes()
+
+        # Step 3: Apply LZ4 compression
+        encoded_data = entropy_encode(data_bytes)
+        final_size = encoded_data['compressed_size']
+
+        # Create result with compression statistics
+        result = {
+            'format': 'lz4',
+            'compression': {
+                'bits': bits,
+                'original_size_bytes': int(original_size),
+                'bit_compressed_size_bytes': int(bit_compressed_size),
+                'final_size_bytes': int(final_size),
+                'compression_ratio': float(original_size / final_size)
+            },
+            'shape': list(original_shape),
+            'data_encoded': encoded_data,
+            'bits': bits
+        }
+
+        # Add quantization parameters if needed
+        if quant_params:
+            result.update(quant_params)
+
+        return result
+
+    except Exception as e:
+        print(f"Error during compression: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def decompress_logits(compressed_logits):
+    """
+    Decompress logits that were compressed with bit-depth reduction and LZ4.
+
+    Args:
+        compressed_logits: The compressed representation
+
+    Returns:
+        PyTorch tensor with decompressed logits
+    """
+    if compressed_logits is None:
+        return None
+
+    try:
+        # Extract basic information
+        bits = compressed_logits.get('bits')
+        shape = compressed_logits.get('shape')
+
+        # Convert shape from list to tuple if necessary
+        if isinstance(shape, list):
+            shape = tuple(shape)
+
+        # Step 1: Decompress LZ4 data
+        encoded_data = compressed_logits.get('data_encoded')
+        data_bytes = entropy_decode(encoded_data)
+
+        # Step 2: Process according to bit depth
+        if bits == 16:
+            # 16-bit decompression (FP16)
+            logits_np = np.frombuffer(data_bytes, dtype=np.float16).reshape(shape)
+            # Convert to float32 for compatibility with PyTorch operations
+            logits_np = logits_np.astype(np.float32)
+            return torch.tensor(logits_np)
+
+        elif bits == 8:
+            # 8-bit dequantization
+            logits_int8 = np.frombuffer(data_bytes, dtype=np.uint8).reshape(shape)
+
+            # Dequantize
+            scale = compressed_logits.get('scale', 1.0)
+            zero_point = compressed_logits.get('zero_point', 0.0)
+            logits_np = (logits_int8.astype(np.float32) - zero_point) * scale
+            return torch.tensor(logits_np)
+
+        elif bits == 4:
+            # Check if values were packed
+            is_packed = compressed_logits.get('packed', False)
+
+            if is_packed:
+                # Unpack 4-bit values (2 values per byte)
+                packed = np.frombuffer(data_bytes, dtype=np.uint8)
+
+                # Calculate total values in original tensor
+                total_values = np.prod(shape)
+                unpacked = np.zeros(total_values, dtype=np.uint8)
+
+                # Handle even indices (lower 4 bits of each byte)
+                even_indices = np.arange(0, total_values, 2)
+                even_indices = even_indices[even_indices < total_values]
+                unpacked[even_indices] = packed[:len(even_indices)] & 0x0F
+
+                # Handle odd indices (upper 4 bits of each byte)
+                odd_indices = np.arange(1, total_values, 2)
+                odd_indices = odd_indices[odd_indices < total_values]
+                unpacked[odd_indices] = (packed[:len(odd_indices)] >> 4) & 0x0F
+
+                # Reshape to original shape
+                logits_int4 = unpacked.reshape(shape)
+            else:
+                # Direct interpretation (rarely used for 4-bit)
+                logits_int4 = np.frombuffer(data_bytes, dtype=np.uint8).reshape(shape)
+
+            # Dequantize
+            scale = compressed_logits.get('scale', 1.0)
+            zero_point = compressed_logits.get('zero_point', 0.0)
+            logits_np = (logits_int4.astype(np.float32) - zero_point) * scale
+            return torch.tensor(logits_np)
+
+        elif bits == 32:
+            # 32-bit (float32) decompression
+            logits_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(shape)
+            return torch.tensor(logits_np)
+
+        else:
+            raise ValueError(f"Unsupported bit depth: {bits}")
+
+    except Exception as e:
+        print(f"Error during decompression: {e}")
+        import traceback
+        traceback.print_exc()
+        return None

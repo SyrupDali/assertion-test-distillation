@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-model_dir = "distilled_codet5_student"  # your fine-tuned student model
+model_dir = "my_students/codet5-small_20250515_152529"  # your fine-tuned student model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("🔍 Loading model...")
