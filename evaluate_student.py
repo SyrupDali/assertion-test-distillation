@@ -13,6 +13,7 @@ from difflib import SequenceMatcher
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import matplotlib.pyplot as plt
 import seaborn as sns
+from codebleu import calc_codebleu
 
 smooth_fn = SmoothingFunction().method1
 
@@ -42,15 +43,34 @@ def evaluate_assertions(generated, reference):
     F1 = 2*P*R/(P+R) if (P+R)>0 else 0.0
     ACC = tp/max(len(gen_n),len(ref_n)) if max(len(gen_n),len(ref_n))>0 else 0.0
 
-    # BLEU: token‐level over the whole generated string against all refs
-    # strip trailing “;” and split by whitespace
-    cand_tokens = generated.strip().rstrip(";").split()
-    ref_tokens  = [r.strip().rstrip(";").split() for r in ref]
+    # # BLEU: token‐level over the whole generated string against all refs
+    # # strip trailing “;” and split by whitespace
+    # cand_tokens = generated.strip().rstrip(";").split()
+    # ref_tokens  = [r.strip().rstrip(";").split() for r in ref]
+    # try:
+    #     BLEU = sentence_bleu(ref_tokens, cand_tokens,
+    #                          smoothing_function=smooth_fn)
+    # except Exception:
+    #     BLEU = 0.0
+    
+    # join all assertions with newlines
+    joined_gen = "\n".join(gen_n)
+    joined_ref = "\n".join(ref_n)
+
+    # tokenize on whitespace
+    cand_tokens = joined_gen.split()
+    ref_tokens  = [joined_ref.split()]
+
     try:
-        BLEU = sentence_bleu(ref_tokens, cand_tokens,
-                             smoothing_function=smooth_fn)
+        BLEU = sentence_bleu(
+            ref_tokens,
+            cand_tokens,
+            smoothing_function=smooth_fn,
+            # e.g. weights=(0.25,0.25,0.25,0.25)
+        )
     except Exception:
         BLEU = 0.0
+
 
     return {
       "precision":P, "recall":R, "f1":F1, "accuracy":ACC,

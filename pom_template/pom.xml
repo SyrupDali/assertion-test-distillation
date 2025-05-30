@@ -23,6 +23,45 @@
       <version>4.13.2</version>
       <scope>test</scope>
     </dependency>
+    <!-- Gson -->
+    <dependency>
+        <groupId>com.google.code.gson</groupId>
+        <artifactId>gson</artifactId>
+        <version>2.10.1</version>
+    </dependency>
+
+    <!-- OkHttp3 + Logging -->
+    <dependency>
+        <groupId>com.squareup.okhttp3</groupId>
+        <artifactId>okhttp</artifactId>
+        <version>4.11.0</version>
+    </dependency>
+    <dependency>
+        <groupId>com.squareup.okhttp3</groupId>
+        <artifactId>logging-interceptor</artifactId>
+        <version>4.11.0</version>
+    </dependency>
+
+    <!-- Retrofit2 + adapters/converters -->
+    <dependency>
+        <groupId>com.squareup.retrofit2</groupId>
+        <artifactId>retrofit</artifactId>
+        <version>2.9.0</version>
+    </dependency>
+    <dependency>
+        <groupId>com.squareup.retrofit2</groupId>
+        <artifactId>converter-gson</artifactId>
+        <version>2.9.0</version>
+    </dependency>
+    <dependency>
+        <groupId>com.squareup.retrofit2</groupId>
+        <artifactId>adapter-rxjava2</artifactId>
+        <version>2.9.0</version>
+    </dependency>
+
+    <!-- If you really need android.text.TextUtils, you can either stub it -->
+    <!-- by creating a tiny `android.text.TextUtils` class in src/main/java/android/text/TextUtils.java -->
+    <!-- or pull in an Android stub JAR from Maven Central (rare). -->
   </dependencies>
 
   <build>
